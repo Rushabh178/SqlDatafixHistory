@@ -2,3 +2,4 @@ update trans set stotalamount = 12342, spaidamount = 12343 where hmy = 700000223
 update detail set hchkorchg = 700001232 where hmy in (12312,1111) and itype=3
 delete from trans where hmy = '46842154854'
 update ct set ct.hCommICS = case when ct.hLeaseType in (1,6,15) then 1 else ct.hCommICS end from CommTenant ct inner join Tenant t on t.hmyperson=ct.htenant where t.hproperty in (select hproperty from listprop where hproplist=2688)
+Update cd set cd.bInactive=-1 from Contract c Inner Join ContractSummary cs on c.hmy=cs.hcontract Inner Join ContractDetail cd on cs.hmy=cd.hContractSummary where c.SCOMPDATE is null and c.istatus=6
