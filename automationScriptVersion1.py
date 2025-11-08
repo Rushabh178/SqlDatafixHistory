@@ -1,23 +1,16 @@
 import re
+from datetime import datetime
 
 def extract_alias_map(from_block: str):
-    """
-    Build {alias: table_name} map from a FROM ... JOIN ... block.
-    Works with or without AS keywords.
-    """
     alias_map = {}
-    # normalise spacing
     f = re.sub(r"\s+", " ", from_block)
-    # break by join keywords
     parts = re.split(r"\bjoin\b", f, flags=re.IGNORECASE)
     for p in parts:
-        # handle "table as alias" or "table alias"
         m = re.search(r"([A-Za-z0-9_#]+)\s+(?:as\s+)?([A-Za-z0-9_#]+)", p, flags=re.IGNORECASE)
         if m:
             tbl, als = m.groups()
             alias_map[als.lower()] = tbl
         else:
-            # also handle single FROM table with no alias
             m2 = re.match(r"^\s*([A-Za-z0-9_#]+)\s*$", p.strip())
             if m2:
                 tbl = m2.group(1)
@@ -25,10 +18,43 @@ def extract_alias_map(from_block: str):
     return alias_map
 
 
-def process_pkg_content(content, case_id):
+def process_pkg_content(content, case_id, client_pin="100089812",
+                        client_name="Ciminelli Real Estate Corporation",
+                        user_name="24931387_110325",
+                        password="QDJ1WW9NmlfZrkdp",
+                        db_server="PCZ001DB102",
+                        instance="PCZ001DB102",
+                        db_name="obtmqcwwa_dmtest_110325",
+                        modified_by="Priyesh Sahijwani",
+                        description="Package to set industry according to lease type for property list '.dmprop'."):
+    
     warnings, output_lines = [], []
+    current_date = datetime.now().strftime("%m/%d/%Y")
 
-    # Table header
+    # ==============================
+    # Header Section (Client Notes)
+    # ==============================
+    notes_block = f"""//Notes
+Client Pin: {client_pin}
+Client Name: {client_name}
+User Name: {user_name}
+Password: {password}
+DB Server: {db_server}
+Instance: {instance}
+DB Name: {db_name}
+
+Case#: {case_id} - {modified_by}
+Date: {current_date}
+Description: {description}
+Modified By: {modified_by}
+//End Notes
+//SQL
+"""
+    output_lines.append(notes_block)
+
+    # ==============================
+    # DataFixHistory Table Creation
+    # ==============================
     header_sql = """If Not Exists (Select Name From SysObjects Where Name = 'DataFixHistory')
     Create Table DataFixHistory
     (
@@ -48,14 +74,18 @@ GO
 """
     output_lines.append(header_sql)
 
-    # clean content
+    # ==============================
+    # Content Cleanup
+    # ==============================
     content = re.sub(r"--.*", "", content)
     content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
     content = re.sub(r"[ \t]+", " ", content).strip()
-
     queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
     queries = [q.strip() for q in queries if q.strip()]
 
+    # ==============================
+    # Query Processing
+    # ==============================
     for q in queries:
         q_clean = q.strip()
         q_lower = q_clean.lower()
@@ -70,7 +100,6 @@ GO
         if q_lower.startswith("update"):
             output_lines.append("-- Auto-generated History Inserts")
 
-            # separate SET, FROM, WHERE
             m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+from\s+(.*)", q_clean, re.IGNORECASE)
             simple_m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+where\s+(.*)", q_clean, re.IGNORECASE)
 
@@ -128,12 +157,14 @@ VALUES
 GO
 """.strip()
             output_lines.append(insert_stmt)
-            backup_stmt = f"SELECT * INTO case#{case_id}_{table_name} FROM {table_name} where {where_part};"
+
+            temp_table = f"case#{case_id}_{table_name}"
+            backup_stmt = f"SELECT * INTO {temp_table} FROM {table_name} where {where_part};"
             output_lines.append("-- Backup Before Delete")
             output_lines.append(backup_stmt)
             output_lines.append("GO")
             output_lines.append("-- Original Query")
             output_lines.append(q_clean)
             output_lines.append("GO")
-
+    output_lines.append("// End SQL")
     return "\n\n".join(output_lines), warnings
