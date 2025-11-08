@@ -1,0 +1,77 @@
+-- Auto-generated History Inserts
+
+-- Original Query
+
+UPDATE ct
+
+-- Original Query
+
+SET ct.hCommICS =
+
+-- Original Query
+
+CASE
+
+-- Original Query
+
+WHEN ct.hLeaseType IN (1, 6, 15) THEN 1
+
+-- Original Query
+
+WHEN ct.hLeaseType IN (8,13) THEN 2
+
+-- Original Query
+
+WHEN ct.hLeaseType = 5 THEN 3
+
+-- Original Query
+
+WHEN ct.hLeaseType = 11 THEN 4
+
+-- Original Query
+
+WHEN ct.hLeaseType = 2 THEN 5
+
+-- Original Query
+
+WHEN ct.hLeaseType = 10 THEN 9
+
+-- Original Query
+
+ELSE ct.hCommICS
+
+-- Original Query
+
+END
+
+-- Original Query
+
+FROM CommTenant ct
+
+-- Original Query
+
+INNER JOIN Tenant t ON t.hmyperson = ct.htenant and t.istatus in (0)
+
+-- Original Query
+
+INNER JOIN Property p ON p.hmy = t.hProperty and p.itype=3
+
+-- Original Query
+
+WHERE t.hproperty IN (
+
+-- Original Query
+
+SELECT hproperty
+
+-- Original Query
+
+FROM listprop
+
+-- Original Query
+
+WHERE hproplist = 2688
+
+-- Original Query
+
+)
