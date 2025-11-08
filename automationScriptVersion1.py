@@ -27,14 +27,11 @@ def process_pkg_content(content, case_id, client_pin="100089812",
                         db_name="obtmqcwwa_dmtest_110325",
                         modified_by="Priyesh Sahijwani",
                         description="Package to set industry according to lease type for property list '.dmprop'."):
-    
+
     warnings, output_lines = [], []
     current_date = datetime.now().strftime("%m/%d/%Y")
 
-    # ==============================
-    # Header Section (Client Notes)
-    # ==============================
-    notes_block = f"""//Notes
+    notes_block = f"""// Notes
 Client Pin: {client_pin}
 Client Name: {client_name}
 User Name: {user_name}
@@ -47,14 +44,12 @@ Case#: {case_id} - {modified_by}
 Date: {current_date}
 Description: {description}
 Modified By: {modified_by}
-//End Notes
-//SQL
+// End Notes
+
+// SQL Start
 """
     output_lines.append(notes_block)
 
-    # ==============================
-    # DataFixHistory Table Creation
-    # ==============================
     header_sql = """If Not Exists (Select Name From SysObjects Where Name = 'DataFixHistory')
     Create Table DataFixHistory
     (
@@ -74,21 +69,17 @@ GO
 """
     output_lines.append(header_sql)
 
-    # ==============================
-    # Content Cleanup
-    # ==============================
+    # Clean content
     content = re.sub(r"--.*", "", content)
     content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
     content = re.sub(r"[ \t]+", " ", content).strip()
     queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
     queries = [q.strip() for q in queries if q.strip()]
 
-    # ==============================
-    # Query Processing
-    # ==============================
     for q in queries:
         q_clean = q.strip()
         q_lower = q_clean.lower()
+
         if not (q_lower.startswith("update") or q_lower.startswith("delete")):
             continue
 
@@ -96,38 +87,56 @@ GO
         output_lines.append(f"-- Processing Query: {q_clean[:120]}")
         output_lines.append("-- ----------------------------")
 
-        # UPDATE
+        # ✅ UPDATE block
         if q_lower.startswith("update"):
             output_lines.append("-- Auto-generated History Inserts")
 
-            m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+from\s+(.*)", q_clean, re.IGNORECASE)
-            simple_m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+where\s+(.*)", q_clean, re.IGNORECASE)
+            is_complex = " from " in q_lower
+            match = None
+            try:
+                if is_complex:
+                    match = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+from\s+(.*)", q_clean, re.IGNORECASE)
+                else:
+                    match = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+where\s+(.*)", q_clean, re.IGNORECASE)
+            except Exception as e:
+                warnings.append(f"⚠️ Regex parsing error: {e} in query: {q_clean[:100]}")
+                continue
 
-            if m:
-                alias = m.group(1)
-                set_part = m.group(2)
-                from_where = m.group(3)
+            if not match:
+                warnings.append(f"⚠️ Invalid UPDATE syntax: {q_clean[:120]}")
+                output_lines.append("-- ⚠️ WARNING: Invalid UPDATE syntax")
+                continue
+
+            if is_complex:
+                alias = match.group(1)
+                set_part = match.group(2)
+                from_where = match.group(3)
                 split_fw = re.split(r"\bwhere\b", from_where, 1, flags=re.IGNORECASE)
                 from_part = split_fw[0].strip()
                 where_part = split_fw[1].strip() if len(split_fw) > 1 else "1=1"
 
                 alias_map = extract_alias_map(from_part)
-                table_name = alias_map.get(alias.lower(), alias)
+                table_name = alias_map.get(alias.lower())
+                if not table_name:
+                    warnings.append(f"⚠️ Alias '{alias}' not found in FROM clause. Defaulting to alias name.")
+                    table_name = alias
                 full_from = "from " + from_part
-            elif simple_m:
-                table_name = simple_m.group(1)
-                set_part = simple_m.group(2)
-                where_part = simple_m.group(3)
-                full_from = f"from {table_name}"
             else:
-                warnings.append(f"⚠️ Could not parse UPDATE: {q_clean[:120]}")
-                continue
+                table_name = match.group(1)
+                set_part = match.group(2)
+                where_part = match.group(3)
+                full_from = f"from {table_name}"
 
             updates = [u.strip() for u in re.split(r",\s*(?![^()]*\))", set_part)]
             for upd in updates:
                 if "=" not in upd:
+                    warnings.append(f"⚠️ Skipped malformed SET clause: {upd}")
                     continue
                 col, new_val = [x.strip() for x in upd.split("=", 1)]
+                if not col or not new_val:
+                    warnings.append(f"⚠️ Missing column or value in SET: {upd}")
+                    continue
+
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
@@ -141,13 +150,21 @@ GO
             output_lines.append(q_clean)
             output_lines.append("GO")
 
-        # DELETE
+        # ✅ DELETE block
         elif q_lower.startswith("delete"):
-            m = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)\s*(?:where\s+(.*))?", q_clean, re.IGNORECASE)
-            if not m:
+            output_lines.append("-- Auto-generated History Insert")
+
+            match = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)\s*(?:where\s+(.*))?", q_clean, re.IGNORECASE)
+            if not match:
+                warnings.append(f"⚠️ Invalid DELETE syntax: {q_clean[:120]}")
+                output_lines.append("-- ⚠️ WARNING: Invalid DELETE syntax")
                 continue
-            table_name = m.group(1)
-            where_part = m.group(2) or "1=1"
+
+            table_name = match.group(1)
+            where_part = match.group(2) or "1=1"
+            if where_part == "1=1":
+                warnings.append(f"⚠️ DELETE without WHERE clause detected: {q_clean[:120]}")
+                output_lines.append("-- ⚠️ WARNING: DELETE without WHERE clause")
 
             insert_stmt = f"""
 INSERT INTO DataFixHistory
@@ -166,5 +183,6 @@ GO
             output_lines.append("-- Original Query")
             output_lines.append(q_clean)
             output_lines.append("GO")
+
     output_lines.append("// End SQL")
     return "\n\n".join(output_lines), warnings
