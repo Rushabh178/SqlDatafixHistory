@@ -66,7 +66,7 @@ if uploaded_file and case_id:
         st.download_button(
             label="💾 Download SQL File",
             data=output_sql,
-            file_name=f"case_{case_id}_datafix.sql",
+            file_name=f"case_{case_id}_datafix.pkg",
             mime="text/sql",
         )
 
