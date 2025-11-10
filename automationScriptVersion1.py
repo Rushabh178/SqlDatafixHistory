@@ -140,7 +140,6 @@ GO
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-VALUES
 (select '{case_id}', '{table_name}', '{col}', hmy, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
 GO
 """.strip()
@@ -175,7 +174,7 @@ GO
 """.strip()
             output_lines.append(insert_stmt)
 
-            temp_table = f"case#{case_id}_{table_name}"
+            temp_table = f"case{case_id}_{table_name}"
             backup_stmt = f"SELECT * INTO {temp_table} FROM {table_name} where {where_part};"
             output_lines.append("-- Backup Before Delete")
             output_lines.append(backup_stmt)
