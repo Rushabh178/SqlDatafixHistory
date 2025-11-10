@@ -46,7 +46,7 @@ Description: {description}
 Modified By: {modified_by}
 // End Notes
 
-// SQL Start
+// SQL
 """
     output_lines.append(notes_block)
 
