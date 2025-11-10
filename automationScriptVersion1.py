@@ -83,9 +83,9 @@ GO
         if not (q_lower.startswith("update") or q_lower.startswith("delete")):
             continue
 
-        output_lines.append("-- ----------------------------")
-        output_lines.append(f"-- Processing Query: {q_clean[:120]}")
-        output_lines.append("-- ----------------------------")
+        #output_lines.append("-- ----------------------------")
+        #output_lines.append(f"-- Processing Query: {q_clean[:120]}")
+        #output_lines.append("-- ----------------------------")
 
         # ✅ UPDATE block
         if q_lower.startswith("update"):
