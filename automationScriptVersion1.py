@@ -136,13 +136,20 @@ GO
                 if not col or not new_val:
                     warnings.append(f"⚠️ Missing column or value in SET: {upd}")
                     continue
+                pk_col = "hmyperson" if table_name.lower() == "tenant" else "hmy"
 
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-(select '{case_id}', '{table_name}', '{col}', hmy, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
-GO
-""".strip()
+(select '{case_id}', '{table_name}', '{col}', {pk_col}, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
+GO                
+""".strip()     
+#                 insert_stmt = f"""
+# INSERT INTO DataFixHistory
+# (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
+# (select '{case_id}', '{table_name}', '{col}', hmy, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
+# GO
+# """.strip()
                 output_lines.append(insert_stmt)
 
             output_lines.append("-- Original Query")
@@ -165,10 +172,11 @@ GO
                 warnings.append(f"⚠️ DELETE without WHERE clause detected: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: DELETE without WHERE clause")
 
+            pk_col = "hmyperson" if table_name.lower() == "tenant" else "hmy"
             insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-(select '{case_id}', '{table_name}', '', hmy, 'delete {table_name}', '', '', GETDATE() from {table_name} where {where_part});
+(select '{case_id}', '{table_name}', '', {pk_col}, 'delete {table_name}', '', '', GETDATE() from {table_name} where {where_part});
 GO
 """.strip()
             output_lines.append(insert_stmt)
