@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
 
+
 def extract_alias_map(from_block: str):
     alias_map = {}
     f = re.sub(r"\s+", " ", from_block)
@@ -16,6 +17,32 @@ def extract_alias_map(from_block: str):
                 tbl = m2.group(1)
                 alias_map[tbl.lower()] = tbl
     return alias_map
+
+
+def find_top_level_kw(sql: str, word: str, start: int = 0) -> int:
+    sql_lower = sql.lower()
+    word = word.lower()
+    wlen = len(word)
+    depth = 0
+    n = len(sql)
+    i = start
+    while i <= n - wlen:
+        ch = sql[i]
+        if ch == '(':
+            depth += 1
+            i += 1
+            continue
+        elif ch == ')':
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and sql_lower[i:i + wlen] == word:
+            before_ok = (i == 0) or sql[i - 1].isspace()
+            after_ok = (i + wlen == n) or sql[i + wlen].isspace()
+            if before_ok and after_ok:
+                return i
+        i += 1
+    return -1
 
 
 def process_pkg_content(content, case_id, client_pin="100089812",
@@ -69,7 +96,6 @@ GO
 """
     output_lines.append(header_sql)
 
-    # Clean content
     content = re.sub(r"--.*", "", content)
     content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
     content = re.sub(r"[ \t]+", " ", content).strip()
@@ -83,38 +109,30 @@ GO
         if not (q_lower.startswith("update") or q_lower.startswith("delete")):
             continue
 
-        #output_lines.append("-- ----------------------------")
-        #output_lines.append(f"-- Processing Query: {q_clean[:120]}")
-        #output_lines.append("-- ----------------------------")
-
-        # ✅ UPDATE block
         if q_lower.startswith("update"):
             output_lines.append("-- Auto-generated History Inserts")
 
-            is_complex = " from " in q_lower
-            match = None
-            try:
-                if is_complex:
-                    match = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+from\s+(.*)", q_clean, re.IGNORECASE)
-                else:
-                    match = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+(.*?)\s+where\s+(.*)", q_clean, re.IGNORECASE)
-            except Exception as e:
-                warnings.append(f"⚠️ Regex parsing error: {e} in query: {q_clean[:100]}")
-                continue
-
-            if not match:
+            m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+", q_clean, re.IGNORECASE)
+            if not m:
                 warnings.append(f"⚠️ Invalid UPDATE syntax: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: Invalid UPDATE syntax")
                 continue
 
-            if is_complex:
-                alias = match.group(1)
-                set_part = match.group(2)
-                from_where = match.group(3)
-                split_fw = re.split(r"\bwhere\b", from_where, 1, flags=re.IGNORECASE)
-                from_part = split_fw[0].strip()
-                where_part = split_fw[1].strip() if len(split_fw) > 1 else "1=1"
+            alias = m.group(1)
+            set_start = m.end()
 
+            from_idx = find_top_level_kw(q_clean, "from", set_start)
+            where_idx = find_top_level_kw(q_clean, "where", set_start)
+
+            if from_idx != -1 and (where_idx == -1 or from_idx < where_idx):
+                is_complex = True
+                set_part = q_clean[set_start:from_idx].strip()
+                if where_idx != -1:
+                    from_part = q_clean[from_idx + len("from"):where_idx].strip()
+                    where_part = q_clean[where_idx + len("where"):].strip()
+                else:
+                    from_part = q_clean[from_idx + len("from"):].strip()
+                    where_part = "1=1"
                 alias_map = extract_alias_map(from_part)
                 table_name = alias_map.get(alias.lower())
                 if not table_name:
@@ -122,9 +140,14 @@ GO
                     table_name = alias
                 full_from = "from " + from_part
             else:
-                table_name = match.group(1)
-                set_part = match.group(2)
-                where_part = match.group(3)
+                is_complex = False
+                table_name = alias
+                if where_idx != -1:
+                    set_part = q_clean[set_start:where_idx].strip()
+                    where_part = q_clean[where_idx + len("where"):].strip()
+                else:
+                    set_part = q_clean[set_start:].strip()
+                    where_part = "1=1"
                 full_from = f"from {table_name}"
 
             updates = [u.strip() for u in re.split(r",\s*(?![^()]*\))", set_part)]
@@ -137,26 +160,18 @@ GO
                     warnings.append(f"⚠️ Missing column or value in SET: {upd}")
                     continue
                 pk_col = "hmyperson" if table_name.lower() == "tenant" else "hmy"
-
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
 (select '{case_id}', '{table_name}', '{col}', {pk_col}, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
 GO                
-""".strip()     
-#                 insert_stmt = f"""
-# INSERT INTO DataFixHistory
-# (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-# (select '{case_id}', '{table_name}', '{col}', hmy, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
-# GO
-# """.strip()
+""".strip()
                 output_lines.append(insert_stmt)
 
             output_lines.append("-- Original Query")
             output_lines.append(q_clean)
             output_lines.append("GO")
 
-        # ✅ DELETE block
         elif q_lower.startswith("delete"):
             output_lines.append("-- Auto-generated History Insert")
 
