@@ -125,7 +125,6 @@ GO
             where_idx = find_top_level_kw(q_clean, "where", set_start)
 
             if from_idx != -1 and (where_idx == -1 or from_idx < where_idx):
-                is_complex = True
                 set_part = q_clean[set_start:from_idx].strip()
                 if where_idx != -1:
                     from_part = q_clean[from_idx + len("from"):where_idx].strip()
@@ -140,7 +139,6 @@ GO
                     table_name = alias
                 full_from = "from " + from_part
             else:
-                is_complex = False
                 table_name = alias
                 if where_idx != -1:
                     set_part = q_clean[set_start:where_idx].strip()
