@@ -11,10 +11,10 @@ st.markdown(
 
 uploaded_file = st.file_uploader("📂 Upload your .pkg or .sql file", type=["pkg", "sql"])
 case_id = st.text_input("🔢 Case ID", placeholder="Enter Case ID (e.g. 17269907)")
-modified_by = st.text_input("👤 Modified By", value="Priyesh Sahijwani")
+modified_by = st.text_input("👤 Modified By", placeholder="Priyesh Sahijwani")
 description = st.text_area(
     "📝 Description",
-    value="Package to set industry according to lease type for property list '.dmprop'."
+    placeholder="Package to set industry according to lease type for property list '.dmprop'."
 )
 
 st.markdown("---")
@@ -24,17 +24,17 @@ st.subheader("💾 Client & Database Information")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    client_pin = st.text_input("Client Pin", value="100089812")
-    user_name = st.text_input("User Name", value="24931387_110325")
-    db_server = st.text_input("DB Server", value="PCZ001DB102")
+    client_pin = st.text_input("Client Pin", placeholder="100089812")
+    user_name = st.text_input("User Name", placeholder="24931387_110325")
+    db_server = st.text_input("DB Server", placeholder="PCZ001DB102")
 
 with col2:
-    client_name = st.text_input("Client Name", value="Ciminelli Real Estate Corporation")
-    password = st.text_input("Password", value="QDJ1WW9NmlfZrkdp")
-    instance = st.text_input("Instance", value="PCZ001DB102")
+    client_name = st.text_input("Client Name", placeholder="Ciminelli Real Estate Corporation")
+    password = st.text_input("Password", placeholder="QDJ1WW9NmlfZrkdp")
+    instance = st.text_input("Instance", placeholder="PCZ001DB102")
 
 with col3:
-    db_name = st.text_input("DB Name", value="obtmqcwwa_dmtest_110325")
+    db_name = st.text_input("DB Name", placeholder="obtmqcwwa_dmtest_110325")
 
 st.markdown("---")
 
