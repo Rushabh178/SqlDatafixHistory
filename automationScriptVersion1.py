@@ -110,7 +110,7 @@ GO
             continue
 
         if q_lower.startswith("update"):
-            output_lines.append("-- Auto-generated History Inserts")
+            #output_lines.append("-- Auto-generated History Inserts")
 
             m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+", q_clean, re.IGNORECASE)
             if not m:
@@ -166,12 +166,12 @@ GO
 """.strip()
                 output_lines.append(insert_stmt)
 
-            output_lines.append("-- Original Query")
+            #output_lines.append("-- Original Query")
             output_lines.append(q_clean)
             output_lines.append("GO")
 
         elif q_lower.startswith("delete"):
-            output_lines.append("-- Auto-generated History Insert")
+            #output_lines.append("-- Auto-generated History Insert")
 
             match = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)\s*(?:where\s+(.*))?", q_clean, re.IGNORECASE)
             if not match:
@@ -196,10 +196,10 @@ GO
 
             temp_table = f"case{case_id}_{table_name}"
             backup_stmt = f"SELECT * INTO {temp_table} FROM {table_name} where {where_part};"
-            output_lines.append("-- Backup Before Delete")
+            #output_lines.append("-- Backup Before Delete")
             output_lines.append(backup_stmt)
             output_lines.append("GO")
-            output_lines.append("-- Original Query")
+            #output_lines.append("-- Original Query")
             output_lines.append(q_clean)
             output_lines.append("GO")
 
