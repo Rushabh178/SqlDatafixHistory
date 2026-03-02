@@ -157,7 +157,7 @@ GO
                 if not col or not new_val:
                     warnings.append(f"⚠️ Missing column or value in SET: {upd}")
                     continue
-                pk_col = "hmyperson" if table_name.lower() == "tenant" else "hmy"
+                pk_col = "hmyperson" if table_name.lower() == "tenant" or "vendor" else "hmy"
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
@@ -185,7 +185,7 @@ GO
                 warnings.append(f"⚠️ DELETE without WHERE clause detected: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: DELETE without WHERE clause")
 
-            pk_col = "hmyperson" if table_name.lower() == "tenant" else "hmy"
+            pk_col = "hmyperson" if table_name.lower() == "tenant" or "vendor" else "hmy"
             insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
