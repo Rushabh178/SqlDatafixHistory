@@ -102,6 +102,18 @@ GO
     queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
     queries = [q.strip() for q in queries if q.strip()]
 
+    # Pre-scan: count how many times each table appears in DELETE queries
+    delete_table_counts = {}
+    for q in queries:
+        q_s = q.strip()
+        if q_s.lower().startswith("delete"):
+            m = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)", q_s, re.IGNORECASE)
+            if m:
+                tbl = m.group(1).lower()
+                delete_table_counts[tbl] = delete_table_counts.get(tbl, 0) + 1
+
+    delete_table_occurrence = {}  # tracks current occurrence index per table
+
     for q in queries:
         q_clean = q.strip()
         q_lower = q_clean.lower()
@@ -185,16 +197,26 @@ GO
                 warnings.append(f"⚠️ DELETE without WHERE clause detected: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: DELETE without WHERE clause")
 
-            pk_col = "hmyperson" if table_name.lower() == "tenant" or table_name.lower() == "vendor" else "hmy"
+            table_lower = table_name.lower()
+            is_duplicate = delete_table_counts.get(table_lower, 1) > 1
+            if is_duplicate:
+                delete_table_occurrence[table_lower] = delete_table_occurrence.get(table_lower, 0) + 1
+                occurrence_num = delete_table_occurrence[table_lower]
+                temp_table = f"case{case_id}_{table_name}{occurrence_num}"
+                notes = f"delete {temp_table} ({table_name})"
+            else:
+                temp_table = f"case{case_id}_{table_name}"
+                notes = f"delete {table_name}"
+
+            pk_col = "hmyperson" if table_lower == "tenant" or table_lower == "vendor" else "hmy"
             insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-(select '{case_id}', '{table_name}', '', {pk_col}, 'delete {table_name}', '', '', GETDATE() from {table_name} where {where_part});
+(select '{case_id}', '{table_name}', '', {pk_col}, '{notes}', '', '', GETDATE() from {table_name} where {where_part});
 GO
 """.strip()
             output_lines.append(insert_stmt)
 
-            temp_table = f"case{case_id}_{table_name}"
             backup_stmt = f"SELECT * INTO {temp_table} FROM {table_name} where {where_part};"
             #output_lines.append("-- Backup Before Delete")
             output_lines.append(backup_stmt)
