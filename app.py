@@ -36,7 +36,7 @@ if page == "🧩 Generate DataFix Package":
     )
 
     case_id = st.text_input("🔢 Case ID", placeholder="Enter Case ID (e.g. 17269907)")
-    modified_by = st.text_input("👤 Modified By", placeholder="Alex Albon")
+    modified_by = st.text_input("👤 Created By", placeholder="Alex Albon")
     description = st.text_area(
         "📝 Description",
         placeholder="Package to set industry according to lease type for property list '.dmprop'."
