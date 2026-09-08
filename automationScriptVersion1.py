@@ -70,7 +70,7 @@ DB Name: {db_name}
 Case#: {case_id} - {modified_by}
 Date: {current_date}
 Description: {description}
-Modified By: {modified_by}
+Created By: {modified_by}
 // End Notes
 
 // SQL
