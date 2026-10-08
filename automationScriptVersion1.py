@@ -2,6 +2,84 @@ import re
 from datetime import datetime
 
 
+# ---------------------------------------------------------------------------
+# String-literal masking
+# ---------------------------------------------------------------------------
+# Values like 'Smith, John' or 'O''Brien' used to break the script because the
+# SET clause was split on every comma and the query splitter / keyword finder
+# did not know they were inside quotes. Now every '...' literal is swapped for
+# a placeholder before parsing and put back at the very end, so commas, quotes,
+# keywords (update/delete/from/where) and "--" inside strings are left alone.
+
+_PLACEHOLDER_RE = re.compile(r"__STRLIT_(\d+)__")
+
+
+def mask_literals_and_strip_comments(sql: str):
+    """Single pass: strip -- and /* */ comments, replace '...' literals with
+    placeholders. Handles '' escapes inside literals. Returns (masked_sql,
+    literals, unterminated_flag)."""
+    literals = []
+    out = []
+    i, n = 0, len(sql)
+    unterminated = False
+    while i < n:
+        ch = sql[i]
+        if ch == "'":
+            j = i + 1
+            while j < n:
+                if sql[j] == "'":
+                    if j + 1 < n and sql[j + 1] == "'":  # escaped quote ''
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:
+                unterminated = True
+            literal = sql[i:j + 1]
+            out.append(f"__STRLIT_{len(literals)}__")
+            literals.append(literal)
+            i = j + 1
+        elif sql.startswith("--", i):
+            j = sql.find("\n", i)
+            if j == -1:
+                break
+            i = j  # keep the newline
+        elif sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            if j == -1:
+                break
+            out.append(" ")
+            i = j + 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), literals, unterminated
+
+
+def restore_literals(text: str, literals) -> str:
+    return _PLACEHOLDER_RE.sub(lambda m: literals[int(m.group(1))], text)
+
+
+def split_top_level_commas(s: str):
+    """Split on commas that are not inside parentheses (any nesting depth)."""
+    parts, depth, buf = [], 0, []
+    for ch in s:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf).strip())
+    return [p for p in parts if p]
+
+
+# ---------------------------------------------------------------------------
+
 def extract_alias_map(from_block: str):
     alias_map = {}
     f = re.sub(r"\s+", " ", from_block)
@@ -96,8 +174,11 @@ GO
 """
     output_lines.append(header_sql)
 
-    content = re.sub(r"--.*", "", content)
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+    # Mask string literals + strip comments in one quote-aware pass
+    content, literals, unterminated = mask_literals_and_strip_comments(content)
+    if unterminated:
+        warnings.append("⚠️ Unterminated string literal (missing closing ') detected in input SQL.")
+
     content = re.sub(r"[ \t]+", " ", content).strip()
     queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
     queries = [q.strip() for q in queries if q.strip()]
@@ -160,7 +241,18 @@ GO
                     where_part = "1=1"
                 full_from = f"from {table_name}"
 
-            updates = [u.strip() for u in re.split(r",\s*(?![^()]*\))", set_part)]
+            pk_col = "hmyperson" if table_name.lower() in ("tenant", "vendor") else "hmy"
+
+            # Warn when the WHERE clause does not filter on the primary key
+            # (checked on the masked text, so 'hmy' inside a string doesn't count)
+            if not re.search(rf"\b{pk_col}\b", where_part, re.IGNORECASE):
+                warnings.append(
+                    f"⚠️ UPDATE on '{table_name}' does not use {pk_col} in the WHERE clause. "
+                    f"Verify hForeignKey in DataFixHistory and set it explicitly if needed: "
+                    f"{q_clean[:120]}"
+                )
+
+            updates = split_top_level_commas(set_part)
             for upd in updates:
                 if "=" not in upd:
                     warnings.append(f"⚠️ Skipped malformed SET clause: {upd}")
@@ -169,7 +261,6 @@ GO
                 if not col or not new_val:
                     warnings.append(f"⚠️ Missing column or value in SET: {upd}")
                     continue
-                pk_col = "hmyperson" if table_name.lower() == "tenant" or table_name.lower() == "vendor" else "hmy"
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
@@ -185,7 +276,8 @@ GO
         elif q_lower.startswith("delete"):
             #output_lines.append("-- Auto-generated History Insert")
 
-            match = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)\s*(?:where\s+(.*))?", q_clean, re.IGNORECASE)
+            match = re.match(r"delete\s+from\s+([A-Za-z0-9_#]+)\s*(?:where\s+(.*))?", q_clean,
+                             re.IGNORECASE | re.DOTALL)
             if not match:
                 warnings.append(f"⚠️ Invalid DELETE syntax: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: Invalid DELETE syntax")
@@ -208,7 +300,7 @@ GO
                 temp_table = f"case{case_id}_{table_name}"
                 notes = f"delete {table_name}"
 
-            pk_col = "hmyperson" if table_lower == "tenant" or table_lower == "vendor" else "hmy"
+            pk_col = "hmyperson" if table_lower in ("tenant", "vendor") else "hmy"
             insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
@@ -226,4 +318,8 @@ GO
             output_lines.append("GO")
 
     output_lines.append("// End SQL")
-    return "\n\n".join(output_lines), warnings
+
+    # Put the original string literals back
+    result = restore_literals("\n\n".join(output_lines), literals)
+    warnings = [restore_literals(w, literals) for w in warnings]
+    return result, warnings
