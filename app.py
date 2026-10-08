@@ -1,8 +1,46 @@
 import streamlit as st
-from automationScriptVersion1 import process_pkg_content
+from automationScriptVersion1 import process_pkg_content, find_non_pk_updates
 from automationScriptRollback import generate_rollback_pkg  # NEW
 
 st.set_page_config(page_title="DataFix SQL Generator", layout="wide")
+
+MANUAL_OPTION = "✏️ Enter manually"
+
+
+def render_fk_picker(issues):
+    """One entry per table (even if several UPDATEs hit it). Returns
+    {table_lower: expression} for the tables where the user chose something
+    other than the default hmy/hmyperson."""
+    overrides = {}
+    st.markdown("#### 🔑 hForeignKey for UPDATEs without hmy in the WHERE clause")
+    st.caption(
+        "These tables are updated without hmy in the WHERE clause. If you are using a different "
+        "value instead of hmy, choose which column should go into hForeignKey in DataFixHistory. "
+        "hForeignKey is numeric, so pick a handle column (h...) or enter an expression manually."
+    )
+
+    for table_lower, info in issues.items():
+        pk_col = info["pk_col"]
+        default_label = f"Keep {pk_col} (default)"
+        options = [default_label] + info["where_columns"] + [MANUAL_OPTION]
+
+        count = info["query_count"]
+        label = f"**{info['table']}** — used in {count} UPDATE{'s' if count > 1 else ''}"
+        choice = st.radio(label, options, key=f"fk_choice_{table_lower}", horizontal=True)
+
+        if choice == MANUAL_OPTION:
+            manual = st.text_input(
+                f"hForeignKey expression for {info['table']}",
+                placeholder="e.g. p.hmy or u.hProperty",
+                key=f"fk_manual_{table_lower}",
+            )
+            if manual.strip():
+                overrides[table_lower] = manual.strip()
+        elif choice != default_label:
+            overrides[table_lower] = choice
+
+    return overrides
+
 
 # ---------------------------
 # 🧭 Sidebar Navigation
@@ -14,7 +52,7 @@ page = st.sidebar.radio(
 )
 
 # ============================================================
-# 🧩 EXISTING FORWARD GENERATOR (UNCHANGED LOGIC)
+# 🧩 EXISTING FORWARD GENERATOR
 # ============================================================
 if page == "🧩 Generate DataFix Package":
 
@@ -75,43 +113,67 @@ if page == "🧩 Generate DataFix Package":
     if st.button("🚀 Generate DataFix SQL"):
         if not content:
             st.error("Please upload a file or paste SQL content first.")
+            st.session_state.pop("fwd_params", None)
         elif not case_id:
             st.error("Please provide a Case ID.")
+            st.session_state.pop("fwd_params", None)
         else:
-            try:
-                output_sql, warnings = process_pkg_content(
-                    content,
-                    case_id,
-                    client_pin=client_pin,
-                    client_name=client_name,
-                    user_name=user_name,
-                    password=password,
-                    db_server=db_server,
-                    instance=instance,
-                    db_name=db_name,
-                    modified_by=modified_by,
-                    description=description
-                )
+            # Keep the inputs so the result survives reruns caused by the
+            # hForeignKey radio buttons / text boxes below.
+            st.session_state["fwd_params"] = dict(
+                content=content,
+                case_id=case_id,
+                client_pin=client_pin,
+                client_name=client_name,
+                user_name=user_name,
+                password=password,
+                db_server=db_server,
+                instance=instance,
+                db_name=db_name,
+                modified_by=modified_by,
+                description=description,
+            )
 
+    params = st.session_state.get("fwd_params")
+
+    if params:
+        try:
+            success_box = st.container()
+            warning_box = st.container()
+
+            # List below the warnings: one row per table, never repeated
+            issues = find_non_pk_updates(params["content"])
+            overrides = render_fk_picker(issues) if issues else {}
+
+            p = dict(params)
+            output_sql, warnings = process_pkg_content(
+                p.pop("content"),
+                p.pop("case_id"),
+                fk_overrides=overrides,
+                **p,
+            )
+
+            with success_box:
                 st.success("✅ SQL generated successfully!")
 
+            with warning_box:
                 if warnings:
                     st.warning("⚠️ Some syntax warnings detected:")
                     for w in warnings:
                         st.text(w)
 
-                st.download_button(
-                    label="💾 Download SQL File",
-                    data=output_sql,
-                    file_name=f"case_{case_id}_datafix.pkg",
-                    mime="text/sql",
-                )
+            st.download_button(
+                label="💾 Download SQL File",
+                data=output_sql,
+                file_name=f"case_{params['case_id']}_datafix.pkg",
+                mime="text/sql",
+            )
 
-                with st.expander("📄 Preview Generated SQL"):
-                    st.code(output_sql, language="sql")
+            with st.expander("📄 Preview Generated SQL"):
+                st.code(output_sql, language="sql")
 
-            except Exception as e:
-                st.exception(e)
+        except Exception as e:
+            st.exception(e)
     else:
         st.info("👆 Please upload a SQL file OR paste SQL content, and enter a Case ID to proceed.")
 
