@@ -123,6 +123,118 @@ def find_top_level_kw(sql: str, word: str, start: int = 0) -> int:
     return -1
 
 
+def get_pk_col(table_name: str) -> str:
+    return "hmyperson" if table_name.lower() in ("tenant", "vendor") else "hmy"
+
+
+def uses_pk(where_part: str, pk_col: str) -> bool:
+    """True if the (masked) WHERE clause references the primary key column."""
+    return bool(re.search(rf"\b{pk_col}\b", where_part, re.IGNORECASE))
+
+
+_WHERE_KW = {"and", "or", "not", "in", "is", "like", "between", "null",
+             "exists", "select", "from", "where", "case", "when", "then", "else", "end"}
+
+_WHERE_COL_RE = re.compile(
+    r"(?<![\w.#])([A-Za-z_#][\w#]*(?:\.[A-Za-z_#][\w#]*)?)\s*"
+    r"(?:<>|!=|<=|>=|=|<|>|\bnot\s+in\b|\bin\b|\bnot\s+like\b|\blike\b|\bbetween\b|\bis\b)",
+    re.IGNORECASE,
+)
+
+
+def extract_where_columns(where_part: str):
+    """Columns that are compared against something in the (masked) WHERE clause,
+    in order of appearance, without duplicates."""
+    cols, seen = [], set()
+    for m in _WHERE_COL_RE.finditer(where_part):
+        c = m.group(1)
+        if c.lower() in _WHERE_KW or c.startswith("__STRLIT_"):
+            continue
+        if c.lower() not in seen:
+            seen.add(c.lower())
+            cols.append(c)
+    return cols
+
+
+def _mask_and_split(content: str):
+    content, literals, unterminated = mask_literals_and_strip_comments(content)
+    content = re.sub(r"[ \t]+", " ", content).strip()
+    queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
+    queries = [q.strip() for q in queries if q.strip()]
+    return queries, literals, unterminated
+
+
+def _parse_update(q_clean: str, warnings: list):
+    """Parse one masked UPDATE. Returns dict(table_name, set_part, full_from,
+    where_part) or None if the syntax isn't recognised."""
+    m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+", q_clean, re.IGNORECASE)
+    if not m:
+        return None
+
+    alias = m.group(1)
+    set_start = m.end()
+
+    from_idx = find_top_level_kw(q_clean, "from", set_start)
+    where_idx = find_top_level_kw(q_clean, "where", set_start)
+
+    if from_idx != -1 and (where_idx == -1 or from_idx < where_idx):
+        set_part = q_clean[set_start:from_idx].strip()
+        if where_idx != -1:
+            from_part = q_clean[from_idx + len("from"):where_idx].strip()
+            where_part = q_clean[where_idx + len("where"):].strip()
+        else:
+            from_part = q_clean[from_idx + len("from"):].strip()
+            where_part = "1=1"
+        alias_map = extract_alias_map(from_part)
+        table_name = alias_map.get(alias.lower())
+        if not table_name:
+            warnings.append(f"⚠️ Alias '{alias}' not found in FROM clause. Defaulting to alias name.")
+            table_name = alias
+        full_from = "from " + from_part
+    else:
+        table_name = alias
+        if where_idx != -1:
+            set_part = q_clean[set_start:where_idx].strip()
+            where_part = q_clean[where_idx + len("where"):].strip()
+        else:
+            set_part = q_clean[set_start:].strip()
+            where_part = "1=1"
+        full_from = f"from {table_name}"
+
+    return {"table_name": table_name, "set_part": set_part,
+            "full_from": full_from, "where_part": where_part}
+
+
+def find_non_pk_updates(content: str):
+    """Tables whose UPDATE statements don't use hmy/hmyperson in the WHERE clause.
+
+    Returns a dict keyed by lower-case table name (each table appears once, even
+    if several UPDATEs hit it):
+        {"table": name, "pk_col": "hmy", "where_columns": [...], "query_count": n}
+    """
+    queries, _, _ = _mask_and_split(content)
+    result = {}
+    for q in queries:
+        if not q.lower().startswith("update"):
+            continue
+        parsed = _parse_update(q, [])
+        if not parsed:
+            continue
+        table = parsed["table_name"]
+        pk_col = get_pk_col(table)
+        if uses_pk(parsed["where_part"], pk_col):
+            continue
+        entry = result.setdefault(table.lower(), {
+            "table": table, "pk_col": pk_col, "where_columns": [], "query_count": 0})
+        entry["query_count"] += 1
+        known = {c.lower() for c in entry["where_columns"]}
+        for c in extract_where_columns(parsed["where_part"]):
+            if c.lower() not in known and c.lower() != pk_col:
+                known.add(c.lower())
+                entry["where_columns"].append(c)
+    return result
+
+
 def process_pkg_content(content, case_id, client_pin="100089812",
                         client_name="Ciminelli Real Estate Corporation",
                         user_name="24931387_110325",
@@ -131,8 +243,12 @@ def process_pkg_content(content, case_id, client_pin="100089812",
                         instance="PCZ001DB102",
                         db_name="obtmqcwwa_dmtest_110325",
                         modified_by="Priyesh Sahijwani",
-                        description="Package to set industry according to lease type for property list '.dmprop'."):
+                        description="Package to set industry according to lease type for property list '.dmprop'.",
+                        fk_overrides=None):
+    """fk_overrides: optional {table_name_lower: expression} used as hForeignKey
+    in the DataFixHistory inserts for UPDATEs on that table, instead of hmy."""
 
+    fk_overrides = {k.lower(): v for k, v in (fk_overrides or {}).items() if v and v.strip()}
     warnings, output_lines = [], []
     current_date = datetime.now().strftime("%m/%d/%Y")
 
@@ -175,13 +291,9 @@ GO
     output_lines.append(header_sql)
 
     # Mask string literals + strip comments in one quote-aware pass
-    content, literals, unterminated = mask_literals_and_strip_comments(content)
+    queries, literals, unterminated = _mask_and_split(content)
     if unterminated:
         warnings.append("⚠️ Unterminated string literal (missing closing ') detected in input SQL.")
-
-    content = re.sub(r"[ \t]+", " ", content).strip()
-    queries = re.split(r"(?i)(?=(?:\bupdate\b|\bdelete\b))", content)
-    queries = [q.strip() for q in queries if q.strip()]
 
     # Pre-scan: count how many times each table appears in DELETE queries
     delete_table_counts = {}
@@ -205,47 +317,25 @@ GO
         if q_lower.startswith("update"):
             #output_lines.append("-- Auto-generated History Inserts")
 
-            m = re.match(r"update\s+([A-Za-z0-9_#]+)\s+set\s+", q_clean, re.IGNORECASE)
-            if not m:
+            parsed = _parse_update(q_clean, warnings)
+            if not parsed:
                 warnings.append(f"⚠️ Invalid UPDATE syntax: {q_clean[:120]}")
                 output_lines.append("-- ⚠️ WARNING: Invalid UPDATE syntax")
                 continue
 
-            alias = m.group(1)
-            set_start = m.end()
+            table_name = parsed["table_name"]
+            set_part = parsed["set_part"]
+            full_from = parsed["full_from"]
+            where_part = parsed["where_part"]
 
-            from_idx = find_top_level_kw(q_clean, "from", set_start)
-            where_idx = find_top_level_kw(q_clean, "where", set_start)
-
-            if from_idx != -1 and (where_idx == -1 or from_idx < where_idx):
-                set_part = q_clean[set_start:from_idx].strip()
-                if where_idx != -1:
-                    from_part = q_clean[from_idx + len("from"):where_idx].strip()
-                    where_part = q_clean[where_idx + len("where"):].strip()
-                else:
-                    from_part = q_clean[from_idx + len("from"):].strip()
-                    where_part = "1=1"
-                alias_map = extract_alias_map(from_part)
-                table_name = alias_map.get(alias.lower())
-                if not table_name:
-                    warnings.append(f"⚠️ Alias '{alias}' not found in FROM clause. Defaulting to alias name.")
-                    table_name = alias
-                full_from = "from " + from_part
-            else:
-                table_name = alias
-                if where_idx != -1:
-                    set_part = q_clean[set_start:where_idx].strip()
-                    where_part = q_clean[where_idx + len("where"):].strip()
-                else:
-                    set_part = q_clean[set_start:].strip()
-                    where_part = "1=1"
-                full_from = f"from {table_name}"
-
-            pk_col = "hmyperson" if table_name.lower() in ("tenant", "vendor") else "hmy"
+            pk_col = get_pk_col(table_name)
+            fk_expr = pk_col
 
             # Warn when the WHERE clause does not filter on the primary key
-            # (checked on the masked text, so 'hmy' inside a string doesn't count)
-            if not re.search(rf"\b{pk_col}\b", where_part, re.IGNORECASE):
+            # (checked on the masked text, so 'hmy' inside a string doesn't count).
+            # The user's hForeignKey choice only applies to these UPDATEs.
+            if not uses_pk(where_part, pk_col):
+                fk_expr = fk_overrides.get(table_name.lower(), pk_col)
                 warnings.append(
                     f"⚠️ UPDATE on '{table_name}' does not use {pk_col} in the WHERE clause. "
                     f"Verify hForeignKey in DataFixHistory and set it explicitly if needed: "
@@ -264,8 +354,8 @@ GO
                 insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
-(select '{case_id}', '{table_name}', '{col}', {pk_col}, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
-GO                
+(select '{case_id}', '{table_name}', '{col}', {fk_expr}, 'updated {table_name}', {new_val}, {col}, GETDATE() {full_from} where {where_part});
+GO
 """.strip()
                 output_lines.append(insert_stmt)
 
@@ -300,7 +390,7 @@ GO
                 temp_table = f"case{case_id}_{table_name}"
                 notes = f"delete {table_name}"
 
-            pk_col = "hmyperson" if table_lower in ("tenant", "vendor") else "hmy"
+            pk_col = get_pk_col(table_name)
             insert_stmt = f"""
 INSERT INTO DataFixHistory
 (hycrm, sTableName, sColumnName, hForeignKey, sNotes, sNewValue, sOldValue, dtDate)
